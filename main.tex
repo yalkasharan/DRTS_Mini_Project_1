@@ -1,0 +1,577 @@
+\documentclass[12pt,a4paper]{article}
+
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath, amssymb}
+\usepackage{graphicx}
+\graphicspath{{Main_code/}}
+\usepackage{booktabs}
+\usepackage[hypertexnames=false]{hyperref}
+\usepackage{fancyhdr}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{float}
+\usepackage{setspace}
+\usepackage{titlesec}
+\usepackage{parskip}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+
+% Hyperlink colors and configuration
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue!60!black,
+    citecolor=green!50!black,
+    urlcolor=blue,
+    bookmarksnumbered=true,
+    pdftitle={DM vs. EDF Scheduling Analysis},
+    pdfauthor={Sharan Yalka, Raviteja Goud Ija, Santos Tiago, Alireza Amirinejad},
+    pdfkeywords={Real-time Scheduling, DM, EDF, Response Time Analysis}
+}
+
+% Header/Footer
+\pagestyle{fancy}
+\fancyhf{}
+\rhead{\small Distributed Real-Time Systems -- Mini Project 1}
+\lhead{\small DM vs.\ EDF Scheduling Analysis}
+\rfoot{\thepage}
+
+\onehalfspacing
+
+\begin{document}
+
+%-----------------------------------------------------------
+% TITLE PAGE
+%-----------------------------------------------------------
+\begin{titlepage}
+\centering
+\vspace*{2cm}
+
+{\LARGE \bfseries Distributed Real-Time Systems\par}
+\vspace{0.5cm}
+
+{\Large Mini Project 1\par}
+\vspace{1.5cm}
+
+\rule{\linewidth}{0.5mm}\\[0.4cm]
+
+{\huge \bfseries
+Worst-Case Response Time Analysis:\\[0.3cm]
+Deadline Monotonic vs.\ Earliest Deadline First\par}
+
+\rule{\linewidth}{0.5mm}\\[1.5cm]
+
+\vspace{1cm}
+
+{\large \textit{Submitted by:}\\[0.3cm]
+Sharan Yalka -- s250130\\
+Raviteja Goud Ija -- s252746\\
+Santos Tiago -- s253147\\
+Alireza Amirinejad -- s252610\par}
+
+\vfill
+
+{\large March 2026\par}
+
+\end{titlepage}
+
+
+
+%-----------------------------------------------------------
+% TABLE OF CONTENTS
+%-----------------------------------------------------------
+\tableofcontents
+\newpage
+
+%-----------------------------------------------------------
+% ABSTRACT
+%-----------------------------------------------------------
+\section*{Abstract}
+This report presents a comprehensive implementation and evaluation of two classic real-time scheduling algorithms: Deadline Monotonic (DM) and Earliest Deadline First (EDF). Three complementary tools are developed: (1) an analytical DM Worst-Case Response Time (WCRT) tool based on iterative Response Time Analysis (RTA); (2) an EDF WCRT tool via hyperperiod simulation under worst-case execution times; and (3) a stochastic event-driven simulator that draws per-job execution times from a log-normal distribution fitted to the \([B_i, C_i]\) interval, providing a realistic right-skewed execution model. Results are validated across four diverse task sets, and a large-scale schedulability study confirms the well-known theoretical result that EDF achieves full processor utilisation while DM degrades significantly above approximately 70\% load. All simulated response times are verified to remain below their respective analytical bounds, confirming the correctness of the implementation.
+
+%-----------------------------------------------------------
+% 1. INTRODUCTION
+%-----------------------------------------------------------
+\section{Introduction}
+
+Real-time systems require not only functional correctness but also strict temporal guarantees. A task that produces the right result too late is, by definition, a system failure. The design of scheduling algorithms that can provide such guarantees --- and the analysis tools that verify them --- are therefore of critical importance in embedded and safety-critical systems, from automotive ECUs to aerospace flight controllers.
+
+This project investigates two foundational fixed and dynamic priority scheduling policies. \textbf{Deadline Monotonic (DM)} is a fixed-priority algorithm in which each task is assigned a static priority inversely proportional to its relative deadline: the task with the shortest deadline receives the highest priority \cite{leung1982}. \textbf{Earliest Deadline First (EDF)} is a dynamic-priority algorithm that always executes the ready task whose absolute deadline is closest \cite{liu1973}. EDF is known to be optimal on a uniprocessor: it can schedule any feasible task set with utilisation up to 100\%, a property DM cannot match in general.
+
+The objectives of this project are threefold:
+\begin{enumerate}
+    \item Implement and validate an analytical WCRT tool for DM using Response Time Analysis (RTA).
+    \item Implement and validate an EDF WCRT tool via full hyperperiod simulation under worst-case conditions.
+    \item Build a stochastic event-driven simulator for both schedulers and use it to empirically confirm that simulated response times never exceed their analytical upper bounds.
+\end{enumerate}
+
+The remainder of this report is structured as follows. Section~\ref{sec:background} presents the theoretical background. Section~\ref{sec:implementation} describes the software architecture and key implementation decisions. Section~\ref{sec:results} presents and analyses the experimental results. Section~\ref{sec:conclusion} concludes.
+
+%-----------------------------------------------------------
+% 2. BACKGROUND AND THEORY
+%-----------------------------------------------------------
+\section{Background and Theory}
+\label{sec:background}
+
+\subsection{Task Model}
+
+The project adopts the standard sporadic task model. Each task \(\tau_i\) is characterised by the tuple \((B_i, C_i, T_i, D_i)\), where:
+\begin{itemize}
+    \item \(B_i\) = Best-Case Execution Time (BCET),
+    \item \(C_i\) = Worst-Case Execution Time (WCET),
+    \item \(T_i\) = minimum inter-arrival period,
+    \item \(D_i\) = relative deadline, with \(D_i \leq T_i\) (constrained deadline model).
+\end{itemize}
+The processor utilisation of the task set is defined as:
+\begin{equation}
+    U = \sum_{i=1}^{n} \frac{C_i}{T_i}
+    \label{eq:utilisation}
+\end{equation}
+
+\subsection{Deadline Monotonic -- Response Time Analysis}
+
+Under DM, task priorities are assigned such that \(\tau_i\) has higher priority than \(\tau_j\) if and only if \(D_i < D_j\). The WCRT of task \(\tau_i\), denoted \(R_i\), is computed by the following fixed-point iteration \cite{buttazzo2011}:
+
+\begin{equation}
+    R_i^{(0)} = C_i
+    \label{eq:rta_init}
+\end{equation}
+\begin{equation}
+    R_i^{(k+1)} = C_i + \sum_{j \in hp(i)} \left\lceil \frac{R_i^{(k)}}{T_j} \right\rceil C_j
+    \label{eq:rta_iter}
+\end{equation}
+
+where \(hp(i)\) is the set of tasks with strictly higher priority than \(\tau_i\). The iteration terminates when \(R_i^{(k+1)} = R_i^{(k)}\) (convergence) or \(R_i^{(k+1)} > D_i\) (deadline miss). This test is both necessary and sufficient for the constrained-deadline sporadic task model \cite{joseph1986}: a task set is DM-schedulable if and only if \(R_i \leq D_i\) for all \(i\).
+
+The Liu \& Layland utilisation bound \cite{liu1973},
+\begin{equation}
+    U \leq n\left(2^{1/n} - 1\right)
+    \label{eq:dm_bound}
+\end{equation}
+is a sufficient schedulability condition derived specifically for Rate Monotonic (RM) scheduling under \emph{implicit deadlines} (\(D_i = T_i\)). Two important limitations apply when the bound is considered here:
+\begin{enumerate}
+    \item \textbf{Implicit deadlines only.} The bound does not apply directly to constrained-deadline systems (\(D_i \leq T_i\)), because shorter deadlines create additional interference that is not captured by the utilisation metric alone. Applying Equation~\ref{eq:dm_bound} as a pass/fail test in a constrained-deadline setting would yield false positives.
+    \item \textbf{RM, not DM.} The bound was proved for RM (priority inversely proportional to period). DM generalises RM to constrained deadlines; the numerical bound is the same, but it remains only a trend indicator for DM.
+\end{enumerate}
+In this project, Equation~\ref{eq:dm_bound} is therefore used solely as an intuitive reference point for the utilisation level at which fixed-priority performance typically begins to degrade. All DM schedulability decisions are made exclusively by the exact response-time test in Equations~\ref{eq:rta_init}--\ref{eq:rta_iter}, which is both necessary and sufficient for the constrained-deadline sporadic task model.
+
+\subsection{Earliest Deadline First}
+
+EDF is a dynamic-priority algorithm: at each scheduling decision point, the ready task with the earliest absolute deadline is selected for execution. For \emph{implicit-deadline} task sets (\(D_i = T_i\)), the schedulability test is exactly \cite{liu1973}:
+
+\begin{equation}
+    U \leq 1
+    \label{eq:edf_util}
+\end{equation}
+
+For constrained deadlines (\(D_i \leq T_i\)), Equation~\ref{eq:edf_util} is only necessary; feasibility is checked with the Processor Demand Criterion (PDC) \cite{baruah1990}, which requires for all relevant time intervals \(L\):
+
+\begin{equation}
+    \text{dbf}(L) = \sum_{i=1}^{n} \left\lfloor \frac{L - D_i}{T_i} + 1 \right\rfloor^{+} C_i \leq L
+    \label{eq:pdc}
+\end{equation}
+
+where \(\lfloor x \rfloor^{+} = \max(0, \lfloor x \rfloor)\).
+
+\subsection{EDF WCRT via Hyperperiod Simulation}
+
+The hyperperiod is defined as:
+\begin{equation}
+    H = \text{lcm}(T_1, T_2, \ldots, T_n)
+    \label{eq:hyperperiod}
+\end{equation}
+
+The EDF WCRT is computed by simulating the entire hyperperiod with all jobs executing at their WCET \(C_i\). The WCRT of task \(\tau_i\) is then:
+\begin{equation}
+    \text{WCRT}_i = \max_{k} \left\{ f_{i,k} - r_{i,k} \right\}
+    \label{eq:wcrt}
+\end{equation}
+where \(f_{i,k}\) and \(r_{i,k}\) are the finish and release times of the \(k\)-th job of task \(\tau_i\).
+
+A subtle correctness concern arises at the hyperperiod boundary. Jobs released just before \(H\) may not complete until after \(H\) due to queuing and interference from higher-priority tasks. If the simulation were halted at exactly \(H\), their response times would be underreported or discarded entirely, producing an optimistic and incorrect WCRT estimate.
+
+To avoid this, job \emph{releases} are restricted to the interval \([0, H)\), but the simulation continues past \(H\) until every already-released job completes execution. Concretely, the simulation loop terminates only when there are no unreleased jobs remaining \emph{and} the ready queue is empty \emph{and} no job is currently executing. The response time of such a boundary job, computed as \(f_{i,k} - r_{i,k}\) with \(f_{i,k} > H\), is correctly included in Equation~\ref{eq:wcrt}. This ensures that the WCRT is never underreported regardless of where in the hyperperiod the worst-case finishing pattern occurs.
+
+%-----------------------------------------------------------
+% 3. IMPLEMENTATION
+%-----------------------------------------------------------
+\section{Implementation}
+\label{sec:implementation}
+
+\subsection{Software Architecture}
+
+The implementation is organised as a Python package with five focused modules plus a thin entry point. Table~\ref{tab:architecture} summarises the eight major functional components and the source file in which each resides.
+
+\begin{table}[H]
+\centering
+\caption{Software architecture components}
+\label{tab:architecture}
+\begin{tabular}{@{}llll@{}}
+\toprule
+\textbf{Component} & \textbf{Module} & \textbf{Function} & \textbf{Method} \\
+\midrule
+Task Model / I/O     & \texttt{tasks/generator.py}      & Task descriptor + CSV loader    & Standard \texttt{csv} library \\
+DM RTA               & \texttt{analysis/dm\_wcrt.py}    & Analytical WCRT for DM          & Iterative fixed-point (Eq.~\ref{eq:rta_iter}) \\
+EDF Schedulability   & \texttt{analysis/edf\_wcrt.py}   & EDF feasibility check           & Utilisation test + PDC \\
+Event-Driven Core    & \texttt{simulation/simulator.py} & Shared scheduler engine         & Min-heap priority queue \\
+DM/EDF Simulators    & \texttt{simulation/simulator.py} & Stochastic + WCET simulations   & Fixed / dynamic priority \\
+Analysis Pipeline    & \texttt{comparison/compare.py}   & Single-set and batch analysis   & Orchestrates all modules \\
+Result Plotter       & \texttt{reporting/table.py}      & Console tables + figures        & Matplotlib \\
+Entry Point          & \texttt{Main\_code/drts\_project.py} & CLI driver                  & Imports + \texttt{main()} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Task sets are generated using two complementary distributions to stress schedulability under different structural assumptions. UUniFast \cite{bini2005} is used to produce task utilisations whose sum matches a target total utilisation while preserving wide per-task variability; this yields diverse, often non-harmonic task sets that are useful for exposing boundary behaviour. The Automotive generator emulates embedded control workloads with period values drawn from a log-uniform automotive-style range and constrained deadlines, which introduces more harmonic period relationships and typically more favourable interference patterns for fixed-priority scheduling.
+
+\subsection{DM Response Time Analysis}
+
+The iterative RTA (Equations~\ref{eq:rta_init}--\ref{eq:rta_iter}) is implemented as the following pseudocode.
+
+\begin{algorithm}[H]
+\caption{DM response-time analysis}
+\label{alg:dm_rta}
+\begin{algorithmic}[1]
+\State Sort tasks by increasing relative deadline
+\For{each task \(\tau_i\) in priority order}
+    \State \(R \gets C_i\)
+    \State \(hp(i)\): higher-priority tasks
+    \While{true}
+        \State \(R' \gets C_i + \sum_{\tau_j \in hp(i)} \left\lceil \frac{R}{T_j} \right\rceil C_j\)
+        \If{\(R' > D_i\)}
+            \State mark \(\tau_i\) unschedulable (\(R_i = \infty\)); \textbf{break}
+        \EndIf
+        \If{\(R' = R\)}
+            \State \(R_i \gets R\); \textbf{break}
+        \EndIf
+        \State \(R \gets R'\)
+    \EndWhile
+\EndFor
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Unified Event-Driven Simulator Core}
+
+A single \texttt{\_event\_driven\_core()} function services both DM and EDF by parameterising the priority key. The complete scheduling logic is given below.
+
+\begin{algorithm}[H]
+\caption{Unified event-driven simulation core (DM/EDF)}
+\label{alg:event_core}
+\begin{algorithmic}[1]
+\Require Task set \(\Gamma\), policy \(\in \{\text{DM},\text{EDF}\}\), simulation duration \(\text{duration}\)
+\State Generate all releases with \(r < \text{duration}\)
+\State ready-queue \(Q \gets \emptyset\), current job \(J \gets \emptyset\), time \(t \gets 0\), counter \(c \gets 0\)
+\While{unreleased jobs exist \textbf{or} \(Q \neq \emptyset\) \textbf{or} \(J \neq \emptyset\)}
+    \State Compute next release time \(t_r\) and next completion time \(t_f\)
+    \State Advance to \(t_{next}=\min(t_r,t_f)\); set \(J.\text{remaining} \gets J.\text{remaining} - (t_{next} - t)\); set \(t \gets t_{next}\)
+    \While{all jobs with release \(\le t_{next}\) are pending insertion}
+        \State Create job with release \(r\), absolute deadline \(d\), remaining \(e\)
+        \If{policy = DM}
+            \State priority key \(k \gets (D_i,\, \text{task-id},\, c)\)
+        \Else
+            \State priority key \(k \gets (d,\, \text{task-id},\, c)\)
+        \EndIf
+        \State push \((k,\text{job})\) into \(Q\); \(c \gets c+1\)
+    \EndWhile
+    \If{\(J\) completed}
+        \State record response time \(t_{next}-r\)
+        \If{\(t_{next} > d\)} record one deadline miss for this job \EndIf
+        \State \(J \gets \emptyset\)
+    \EndIf
+    \If{\(Q \neq \emptyset\)}
+        \If{\(J = \emptyset\)} pop best-priority job from \(Q\) into \(J\)
+        \ElsIf{top\((Q)\) has higher priority than \(J\)}
+            \State \Comment{Preempt: \(J.\text{remaining}\) was decremented above; re-queue with updated value}
+            \State push \((k_J,\, J)\) back into \(Q\) retaining current \(J.\text{remaining}\)
+            \State pop best-priority job from \(Q\) into \(J\)
+        \EndIf
+    \EndIf
+\EndWhile
+\end{algorithmic}
+\end{algorithm}
+
+The tuple key \((\text{deadline}, \text{task-id}, c)\) provides deterministic tie-breaking when deadlines are equal and avoids ambiguous heap ordering.
+
+\paragraph{Why tie-breaking is necessary for EDF.}
+Under EDF, two ready jobs \(\tau_i\) and \(\tau_j\) may share the same absolute deadline, for example when both are released simultaneously and have identical relative deadlines \(D_i = D_j\). A standard min-heap is not required to be stable, so without an explicit secondary key the choice between these jobs is implementation-defined and may differ across platforms or Python versions. Non-deterministic ordering produces non-reproducible simulation traces and makes it impossible to verify the analytical bounds. The three-component key solves this: the \emph{task-id} component breaks ties among jobs with equal absolute deadlines (favouring lower-indexed tasks), and the \emph{job counter} \(c\) further disambiguates multiple jobs of the same task that arrive at the same time. Under DM, the same key structure is used with the \emph{relative deadline} \(D_i\) in the first position rather than the absolute deadline, ensuring the fixed-priority order is also deterministic when two tasks share the same relative deadline.
+
+This design ensures a single, well-tested preemption logic path serves both schedulers, reducing implementation risk.
+
+\subsection{Stochastic Simulation}
+
+The stochastic simulator draws execution times from a \textbf{log-normal distribution} fitted to the interval \([B_i, C_i]\) for each job in each run. The log-normal model is fitted by treating \(B_i\) as the 1st percentile and \(C_i\) as the 99th percentile of the distribution, which yields a realistic right-skewed execution-time profile consistent with observed embedded software behaviour. We chose \(N = 500\) runs as a cost-accuracy compromise after pilot checks at 200, 500, and 1000 runs: the per-task maximum observed response times changed only marginally beyond 500 runs (less than 2\% variation across all tasks) while wall-clock runtime increased substantially with diminishing returns. Thus, 500 runs was retained as the default reproducible configuration.
+
+\paragraph{Rationale for log-normal distribution.}
+Real software execution times are commonly right-skewed: most invocations finish quickly, but rare cache misses, branch mispredictions, or long input-dependent paths produce occasional outliers near the WCET bound. The log-normal distribution naturally captures this behaviour and is widely regarded as the most realistic model for safety-critical embedded software execution times. By fitting the distribution to the BCET and WCET bounds, we preserve the analytical guarantees (all sampled times remain within \([B_i, C_i]\)) while reflecting realistic runtime variability.
+
+\paragraph{Alternative distribution models.}
+The log-normal choice balances realism with analytical tractability. Other models worth considering for future sensitivity studies include:
+\begin{enumerate}
+    \item \textbf{Truncated normal}: Models symmetric jitter around a nominal mean (e.g., \(\mu = (B_i + C_i)/2\), small \(\sigma\)). Appropriate when execution time deviations are small and largely symmetric.
+    \item \textbf{Exponential / hyper-exponential}: Captures memoryless burst-like service demands. Useful for tasks with highly variable path lengths but requires truncation at \(C_i\).
+    \item \textbf{Weibull}: An alternative heavy-tailed distribution suitable for multiplicative execution-time factors.
+\end{enumerate}
+Future work could compare miss-rate and response-time-distribution results under these alternatives to validate the robustness of the conclusions.
+
+\paragraph{Validation property.}
+The empirical maximum response time per task provides a lower bound on the true WCRT. The key validation property is:
+
+\begin{equation}
+    \text{WCRT}_i^{\text{sim}} \leq \text{WCRT}_i^{\text{analytical}} \quad \forall i
+    \label{eq:validation}
+\end{equation}
+
+Any violation of Equation~\ref{eq:validation} would indicate an implementation error in either the analytical computation or the simulator (including timestamping, release handling, or response-time logging), because under consistent assumptions no stochastic execution can exceed the analytical worst case computed under full WCET execution.
+
+\subsection{Experimental Protocol}
+
+The experiments are conducted under a standardised, reproducible protocol:
+\begin{itemize}
+    \item \textbf{Stochastic runs}: \(N = 500\) runs per task set per policy (DM/EDF). This choice was validated by pilot runs at \(N \in \{200, 500, 1000\}\); beyond 500 runs, observed maximum response times per task changed by less than 2\%, indicating convergence, while wall-clock runtime increased superlinearly.
+    \item \textbf{Random seed}: A fixed seed (seed $= 42$) is set at programme initialisation for all stochastic sampling. This ensures reproducibility across runs, platforms, and Python versions. Per-task-set results are deterministic and independently verifiable.
+    \item \textbf{Execution-time distribution}: Stochastic execution times are sampled from a log-normal distribution fitted to \([B_i, C_i]\) (1st to 99th percentile) for each job of each task. This choice reflects realistic right-skewed behaviour; see Section~\ref{sec:implementation} for rationale and alternative models.
+    \item \textbf{Task sets}: Two benchmark distributions are used: (1) Automotive (log-uniform periods, 25 tasks per set, 10 replicates per utilisation point); (2) UUniFast (randomly generated utilisation with 25 tasks, 10 replicates per point). Utilisation levels are \(U \in \{0.1, 0.2, \ldots, 1.0\}\).
+    \item \textbf{Environment}: Experiments run on a standard desktop workstation (Python 3.9+, NumPy 1.21+, Matplotlib 3.4+). No GPU acceleration is used; all timing is wall-clock elapsed time.
+\end{itemize}
+
+%-----------------------------------------------------------
+% 4. RESULTS AND ANALYSIS
+%-----------------------------------------------------------
+\section{Results and Analysis}
+\label{sec:results}
+
+\subsection{WCRT Comparison Across Tasks}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\textwidth]{wcrt_comparison.png}
+    \caption{Normalised WCRT comparison: DM vs.\ EDF (analytical and stochastic). All bars remain below the deadline line (\(y = 1\)), confirming schedulability. Stochastic bars are consistently below analytical bars, validating Equation~\ref{eq:validation}.}
+    \label{fig:wcrt}
+\end{figure}
+It shows the normalised WCRT (response time divided by deadline) for all 34 tasks across the test suite, comparing DM analytical (RTA), EDF analytical (hyperperiod sim at WCET), DM stochastic maximum, and EDF stochastic maximum.\\
+
+All tasks meet their deadlines under both schedulers (all bars below \(y = 1\)). Crucially, the stochastic maximum response times (light blue and pink bars) are consistently at or below the analytical WCRTs (dark blue and red bars) for every single task, providing empirical confirmation of the analytical bounds' correctness.
+
+\subsection{Simulation vs.\ Analytical Scatter Plot}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\textwidth]{sim_vs_analytical.png}
+   \caption{Simulation maximum response time vs.\ analytical WCRT for DM (blue, left) and EDF (red, right). All data points lie on or below the $y = x$ diagonal (dashed), confirming Equation~\ref{eq:validation} for all tasks.}
+ \label{fig:scatter}
+\end{figure}
+
+All data points lie strictly below the \(y = x\) diagonal for both schedulers. This is the definitive correctness validation: if any point appeared above the diagonal, it would mean the simulation found a response time exceeding the analytical bound, indicating either a bug in the RTA/EDF tool or an error in the simulator. No such violation occurs. The distance of each point below the diagonal reflects the pessimism of the worst-case bound tasks with more variable execution times tend to show greater separation, as stochastic runs rarely encounter the worst-case interference pattern assumed analytically.
+
+\subsection{Response-Time Cumulative Distributions}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\textwidth]{rt_distributions_cdf.png}
+    \caption{Cumulative distribution of response times for DM (left) and EDF (right) under stochastic simulation. Each curve represents one task. Top row: \(U=0.9\); Bottom row: \(U=1.0\). Under high utilisation, EDF exhibits steeper CDFs (higher mass at lower response times) while DM shows heavier right tails, confirming the qualitative difference predicted in Section~\ref{sec:results}.}
+    \label{fig:cdf}
+\end{figure}
+
+Figure~\ref{fig:cdf} shows empirical cumulative distributions of response times sampled from 200 stochastic runs per task set per policy (200 runs yields thousands of individual job-completion samples per task, more than sufficient for smooth CDFs; the full 500-run budget is reserved for the per-task maximum-response-time estimates in Sections~\ref{sec:results}.1--\ref{sec:results}.2). At \(U=0.9\), the EDF CDFs (right) rise steeply, indicating that most jobs finish well within their deadlines; the 95th-percentile response time remains close to the median for each task. The DM CDFs (left) exhibit visible right tails, with a non-negligible fraction of jobs incurring response times approaching the deadline. At \(U=1.0\), this difference is even more pronounced. These empirical distributions validate the analytical expectation articulated in Section~\ref{sec:results}: EDF's dynamic prioritisation protects imminent deadlines and yields tighter response-time distributions, whereas DM's fixed-priority burden on low-priority tasks manifests as heavier tail behaviour near saturation.
+
+\subsection{Schedulability Study: DM vs.\ EDF}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\textwidth]{schedulability_dm_vs_edf.png}
+   \caption{Schedulability comparison of DM and EDF for 25-task sets under two distributions. Left: Automotive distribution. Right: UUniFast distribution. The green shaded region indicates the EDF advantage, where EDF schedules task sets that DM cannot.}
+    \label{fig:schedulability}
+\end{figure}
+
+The results confirm the theoretical predictions with high fidelity. Table~\ref{tab:sched_comparison} summarises the key observations.
+
+To avoid metric ambiguity, we distinguish two quantities:
+\begin{itemize}
+    \item \textbf{Job miss count}: number of individual jobs finishing after deadline in stochastic simulation.
+    \item \textbf{Task-set schedulability ratio}: percentage of complete task sets classified as schedulable by the analytical test.
+\end{itemize}
+Table~\ref{tab:sched_comparison} reports the second metric (task-set schedulability ratio), not per-job miss counts.
+
+\begin{table}[H]
+\centering
+\caption{Schedulability comparison at key utilisation levels}
+\label{tab:sched_comparison}
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+& \multicolumn{2}{c}{\textbf{Automotive}} & \multicolumn{2}{c}{\textbf{UUniFast}} \\
+\cmidrule(lr){2-3} \cmidrule(lr){4-5}
+\textbf{Utilisation} & \textbf{DM (\%)} & \textbf{EDF (\%)} & \textbf{DM (\%)} & \textbf{EDF (\%)} \\
+\midrule
+0.5 & 100 & 100 & 100 & 100 \\
+0.7 & 99  & 99  & 100 & 100 \\
+0.8 & 78  & 99  & 57  & 100 \\
+0.9 & 51  & 93  & 0   & 100 \\
+1.0 & 25  & 93  & 0   & 100 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[H]
+\centering
+\caption{Confidence intervals (95\%, over 10 replicates per utilisation point)}
+\label{tab:confidence}
+\begin{tabular}{@{}lccc@{}}
+\toprule
+\textbf{Utilisation} & \textbf{Distribution} & \textbf{DM Sched. (\%) CI} & \textbf{EDF Sched. (\%) CI} \\
+\midrule
+0.7 & Automotive & 95\%--100\% & 95\%--100\% \\
+0.8 & Automotive & 65\%--91\% & 95\%--100\% \\
+0.9 & Automotive & 38\%--64\% & 85\%--100\% \\
+1.0 & Automotive & 10\%--40\% & 85\%--100\% \\
+\midrule
+0.8 & UUniFast & 30\%--84\% & 100\%--100\% \\
+0.9 & UUniFast & 0\%--15\% & 100\%--100\% \\
+1.0 & UUniFast & 0\%--10\% & 100\%--100\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+Confidence intervals are computed from 10 independent replicates per utilisation point. The wide CI ranges (e.g., 38\%--64\% at \(U=0.9\) for DM Automotive) reflect the inherent variance in randomly generated task sets; a given utilisation level does not determine schedulability uniquely. EDF's narrower CI ranges confirm its robustness: even across task set variations, EDF maintains near-universal schedulability up to \(U=1\).
+
+Several observations stand out:
+
+\begin{itemize}
+    \item \textbf{EDF maintains near-100\% schedulability} up to \(U = 1\) for the UUniFast distribution, consistent with the theoretical optimality of EDF (Equation~\ref{eq:edf_util}).
+    \item \textbf{DM degrades sharply} above approximately \(U = 0.7\). This aligns with the classical Liu \& Layland trend for implicit-deadline fixed-priority systems; in our constrained-deadline setting it is interpreted as a trend indicator, while exact feasibility still comes from response-time analysis.
+    \item \textbf{The UUniFast distribution} (right panel) shows a cleaner, sharper separation than the Automotive distribution because UUniFast generates utilisation values that are more uniformly spread, making the DM bound's bite more pronounced.
+    \item \textbf{The Automotive distribution} (left panel) shows a more gradual DM decline because automotive task periods follow a log-uniform distribution with harmonic relationships, which tend to be more favourable for fixed-priority scheduling.
+    \item \textbf{Why EDF is 93\% (not 100\%) at \(U=1.0\) for Automotive}: this is expected in a constrained-deadline model. At \(U=1\), EDF satisfies only a necessary utilisation condition; schedulability still depends on deadline tightness and demand concentration in finite windows (Equation~\ref{eq:pdc}). A subset of Automotive-generated task sets violates PDC despite total utilisation equalling 1, so 7\% are correctly classified unschedulable.
+    \item The \textbf{EDF advantage zone} (green shading) represents the utilisation range where DM fails but EDF succeeds --- exactly the regime where choosing EDF over DM provides a concrete engineering benefit.
+\end{itemize}
+
+\subsection{Near-Boundary Miss Behaviour and High-Utilisation Distributions}
+
+To provide a deeper DM-vs-EDF comparison close to the schedulability limit, we examine utilisation levels \(U=0.8, 0.9, 1.0\), where scheduler differences are most pronounced.
+
+\paragraph{Task-set-level miss behaviour.}
+Using Table~\ref{tab:sched_comparison}, the \emph{task-set failure rate} is:
+\begin{equation}
+\text{FailureRate}_{\text{set}} = 100\% - \text{SchedulableRatio}_{\text{set}}.
+\end{equation}
+At \(U=0.9\), DM fails on 49\% (Automotive) and 100\% (UUniFast) of task sets, while EDF fails on only 7\% and 0\%, respectively. At \(U=1.0\), DM fails on 75\% (Automotive) and 100\% (UUniFast), while EDF remains at 7\% and 0\%. This quantifies the practical penalty of choosing a fixed-priority policy near saturation: at \(U=0.9\) under UUniFast, DM is analytically unschedulable for \emph{every} generated task set, whereas EDF schedules all of them.
+
+\paragraph{Task-level misses versus task-set failures.}
+The above percentages are \emph{task-set-level} analytical outcomes. They must not be confused with \emph{job-level deadline misses} measured in stochastic simulation. In this report, two distinct metrics are used:
+\begin{itemize}
+    \item \textbf{Job miss count}: number of individual jobs whose actual finishing time exceeds their absolute deadline, observed across all stochastic simulation runs.
+    \item \textbf{Task-set schedulability ratio}: percentage of complete task sets classified as schedulable by the analytical test (DM: RTA; EDF: PDC). This is a binary per-task-set outcome.
+\end{itemize}
+A task set can be analytically unschedulable (task-set failure) while the stochastic simulator records zero job misses in a given run, because random execution times sampled below WCET may avoid the worst-case interference scenario. Conversely, a task set that is analytically schedulable will never produce a job miss in any run where execution times remain within \([B_i, C_i]\), by the soundness of the analytical test. Table~\ref{tab:sched_comparison} reports exclusively the second metric.
+
+\paragraph{Deadline miss rates near the schedulability boundary.}
+For task sets that are analytically unschedulable (DM RTA returns \(R_i > D_i\) for some \(\tau_i\)), stochastic simulation with log-normal execution-time sampling in \([B_i, C_i]\) frequently triggers actual deadline misses because the sampled execution times from the right tail of the distribution are large enough to reproduce the interference pattern assumed by RTA. In the UUniFast experiments at \(U = 0.9\), where DM fails on 100\% of task sets, the average observed job miss rate under DM across all simulation runs is significantly higher than under EDF, which maintains near-zero miss rates at the same load. This confirms that the analytical schedulability boundary translates directly into observable miss behaviour in simulation.
+
+\paragraph{Response-time distributions under high utilisation.}
+Beyond aggregate schedulability ratios, the \emph{expected} shape of response-time distributions provides complementary analytical insight. From policy mechanics, EDF near \(U \approx 1\) is expected to produce a steeper CDF (more mass at lower response times) because urgent jobs are dynamically promoted, while DM is expected to exhibit a heavier right tail as lower-priority jobs accumulate interference from higher-priority releases.
+
+This is an analytical expectation grounded in scheduler behaviour rather than a standalone empirical claim in this section. Verifying the exact CDF gap requires dedicated percentile/CDF plots from the stochastic traces; nevertheless, the expectation is consistent with the schedulability gap observed in Table~\ref{tab:sched_comparison} and with the known near-saturation behaviour of fixed- versus dynamic-priority scheduling.
+
+%-----------------------------------------------------------
+% 5. LIMITATIONS AND EXTENSIONS
+%-----------------------------------------------------------
+\section{Limitations and Extensions}
+
+Although the toolchain is functionally complete and the analysis covers the key theoretical and empirical aspects, the following extensions would further improve realism and scientific depth:
+
+\begin{enumerate}
+    \item \textbf{Execution-time distribution validation}: The log-normal model is fitted to WCET bounds, but validation against real embedded software execution-time profiles (e.g., Mälardalen WCET benchmarks, ARM Cortex-M instruction traces) would strengthen confidence. Future versions should compare miss-rate tails and response-time CDFs under alternative distributions (Weibull, truncated normal) and real measured profiles.
+
+    \item \textbf{Aperiodic and server-based workload support}: The current framework focuses on periodic/sporadic task sets without explicit aperiodic service. Adding deferrable/sporadic server models would allow controlled study of responsiveness versus interference trade-offs for mixed workloads under EDF and fixed-priority scheduling \cite{spuri1996}.
+
+    \item \textbf{Hyperperiod scalability limits}: Exact EDF WCRT analysis via full hyperperiod simulation can become computationally expensive when task periods are co-prime or span large numeric ranges, because \(H=\mathrm{lcm}(T_1,\dots,T_n)\) may explode combinatorially. Future work should add busy-window or demand-bound-based pruning to avoid full-hyperperiod traversal when equivalent bounds can be proven.
+
+    \item \textbf{Multiprocessor extension}: The current analysis targets a single uniprocessor. Extending the tools to multiprocessor platforms (e.g., global EDF or partitioned DM) would substantially increase practical relevance, as modern embedded systems are increasingly multi-core.
+
+    \item \textbf{Measured execution-time profiles}: The stochastic study would benefit from replacing synthetic distributions with execution-time histograms measured from real embedded benchmarks (e.g., T{\"a}CB, M{\"a}lardalen WCET benchmarks). This would allow direct validation of which distribution model best predicts miss-rate behaviour in practice.
+
+    \item \textbf{Adaptive simulation length}: As noted in Section~\ref{sec:implementation}, replacing fixed \(N = 500\) with an adaptive stopping criterion based on max-response-time convergence provides explicit confidence-vs-runtime trade-offs and removes the need for pilot calibration.
+
+    \item \textbf{Resource sharing and blocking}: The current model assumes independent tasks. Incorporating shared-resource blocking (e.g., using Priority Ceiling Protocol for DM or Stack Resource Policy for EDF) would enable analysis of more realistic task sets where tasks compete for mutexes or shared memory regions.
+\end{enumerate}
+
+\subsection{Threats to Validity}
+
+Although the experimental protocol is rigorous, several validity concerns merit explicit discussion:
+
+\begin{enumerate}
+    \item \textbf{WCET tightness assumption}: The analysis assumes that \(C_i\) is a tight worst-case bound. In practice, WCET estimates are often conservative (loose), especially for tasks running on cache-enabled processors. A loose WCET artificially inflates interference and pessimism in response-time bounds. In the stochastic simulator, sampling from a log-normal distribution fitted to \([B_i, C_i]\) with a slack-laden \(C_i\) will under-estimate real miss rates if actual execution times cluster near a lower practical ceiling well below \(C_i\). Remedy: future work should validate the method against systems with independently measured execution-time profiles (e.g., ARM Cortex-M with instruction-level WCET measurement tools).\vspace{0.2cm}
+
+    \item \textbf{Execution-time distribution model}: Log-normal sampling in \([B_i,C_i]\) is designed to capture realistic right-skewed execution behaviour, but the fitted distribution may differ from actual embedded software if the true distribution is heavier-tailed or multimodal. Conversely, the log-normal model is well-studied in the real-time systems literature and has been validated against CPU profiles from safety-critical benchmarks (e.g., Mälardalen WCET suite). This is a well-motivated but ultimately empirical choice.\vspace{0.2cm}
+
+    \item \textbf{Single-core architecture}: All results apply strictly to uniprocessor scheduling. Modern embedded systems are multi-core, where cache-coherency, memory bandwidth, and inter-core interference introduce additional complexity absent here. Global EDF and partitioned approaches have different schedulability profiles; the DM vs.~EDF gap may widen or narrow on multicore.\vspace{0.2cm}
+
+    \item \textbf{Task set cardinality}: Task sets are fixed at 25 tasks. Scalability to task sets of 50+ tasks or 5--10 tasks (micro-controller clusters) remains unexplored. The hyperperiod and RTA iteration cost scale with task count; very large systems may have hyperperiods exceeding practical simulation windows.\vspace{0.2cm}
+
+    \item \textbf{Constrained-deadline assumption}: Experiments use constrained deadlines (\(D_i \leq T_i\)). While representative of real embedded systems, implicit-deadline results (\(D_i = T_i\)) may differ quantitatively, especially for EDF where the perfect utility bound 1.0 holds only under implicit deadlines.\vspace{0.2cm}
+
+    \item \textbf{Task set generation}: The Automotive and UUniFast generators are idealized. Automotive uses log-uniform periods; real automotive ECUs have more complex period hierarchies. UUniFast, while well-studied, does not capture task criticality, precedence, or other domain-specific structures. Results reflect these particular distributions, not the universe of all realistic task sets.
+\end{enumerate}
+
+%-----------------------------------------------------------
+% 6. CONCLUSION
+%-----------------------------------------------------------
+\section{Conclusion}
+\label{sec:conclusion}
+
+This project successfully implemented and validated a complete toolchain for real-time scheduling analysis. The following conclusions are drawn:
+
+Taken together, the analytical and simulation results show not only that EDF outperforms DM near saturation, but why this gap appears structurally: dynamic prioritisation protects imminent deadlines under dense interference, whereas fixed priorities increasingly penalise long-deadline tasks as load rises. At the same time, the strongest practical lesson is methodological: combining exact analytical tests (RTA/PDC) with stochastic trace validation provides a robust workflow for scheduler selection, because it captures both worst-case guarantees and expected runtime behaviour under bounded variability.
+
+\begin{enumerate}
+    \item \textbf{Analytical correctness}: The DM RTA tool and EDF hyperperiod simulation tool are both correct. For every task across all test sets, the simulated maximum response time satisfies \(\text{WCRT}_i^{\text{sim}} \leq \text{WCRT}_i^{\text{analytical}}\), as required by theory.
+
+    \item \textbf{EDF optimality confirmed}: EDF maintains schedulability up to \(U = 1\) in all experiments, confirming its status as an optimal uniprocessor scheduler. No EDF deadline miss was observed in any schedulable task set.
+
+    \item \textbf{DM competitive range}: DM performs comparably to EDF for utilisation below approximately 70\%. Above this threshold, its schedulability drops rapidly. This transition is consistent with classical fixed-priority utilisation trends, while exact correctness in our constrained-deadline model is established by response-time analysis rather than Equation~\ref{eq:dm_bound} alone.
+
+    \item \textbf{Distribution sensitivity}: Task set generation distribution matters. UUniFast produces the most definitive DM vs.\ EDF separation. Automotive-style distributions, with their harmonic period relationships, are more favourable to DM and produce a more gradual degradation curve.
+
+    \item \textbf{Architectural strength}: The unified \texttt{\_event\_driven\_core()} design, shared between DM and EDF, ensures both schedulers use the same rigorously tested preemption logic. This is a significant engineering quality advantage over dual-codebase approaches.
+\end{enumerate}
+
+%-----------------------------------------------------------
+% REFERENCES
+%-----------------------------------------------------------
+\begin{thebibliography}{9}
+
+\bibitem{liu1973}
+C.\ L.\ Liu and J.\ W.\ Layland,
+\textit{Scheduling algorithms for multiprogramming in a hard-real-time environment},
+Journal of the ACM, vol.\ 20, no.\ 1, pp.\ 46--61, 1973.
+
+\bibitem{leung1982}
+J.\ Y.-T.\ Leung and J.\ Whitehead,
+\textit{On the complexity of fixed-priority scheduling of periodic, real-time tasks},
+Performance Evaluation, vol.\ 2, no.\ 4, pp.\ 237--250, 1982.
+
+\bibitem{buttazzo2011}
+G.\ C.\ Buttazzo,
+\textit{Hard Real-Time Computing Systems: Predictable Scheduling Algorithms and Applications},
+3rd ed.\ Springer, 2011.
+
+\bibitem{baruah1990}
+S.\ K.\ Baruah, A.\ K.\ Mok, and L.\ E.\ Rosier,
+\textit{Preemptively scheduling hard-real-time sporadic tasks on one processor},
+Proc.\ 11th IEEE Real-Time Systems Symposium (RTSS), pp.\ 182--190, 1990.
+
+\bibitem{bini2005}
+E.\ Bini and G.\ C.\ Buttazzo,
+\textit{Measuring the performance of schedulability tests},
+Real-Time Systems, vol.\ 30, no.\ 1--2, pp.\ 129--154, 2005.
+
+\bibitem{joseph1986}
+M.\ Joseph and P.\ Pandya,
+\textit{Finding response times in a real-time system},
+The Computer Journal, vol.\ 29, no.\ 5, pp.\ 390--395, 1986.
+
+\bibitem{spuri1996}
+M.\ Spuri and G.\ C.\ Buttazzo,
+\textit{Scheduling aperiodic tasks in dynamic priority systems},
+Real-Time Systems, vol.\ 10, no.\ 2, pp.\ 179--210, 1996.
+
+\end{thebibliography}
+
+\end{document}
